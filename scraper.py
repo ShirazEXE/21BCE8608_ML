@@ -1,21 +1,21 @@
 import requests
 from bs4 import BeautifulSoup
 import time
-from pymongo import MongoClient
 import logging
+from langchain.vectorstores import Chroma
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.schema import Document
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# MongoDB connection
-client = MongoClient('mongodb://localhost:27017/')
-db = client['document_retrieval']
-documents = db['documents']
+# Initialize Langchain components
+embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+vector_store = Chroma(embedding_function=embeddings, persist_directory="./chroma_db")
 
 # List of news sources with their URLs and parsing functions
 NEWS_SOURCES = [
-    
     {
         'name': 'Economic Times',
         'url': 'https://economictimes.indiatimes.com/markets/stocks/news',
@@ -39,11 +39,20 @@ def scrape_articles():
             
             for article in articles:
                 # Check if article already exists
-                existing_article = documents.find_one({'link': article['link']})
-                if not existing_article:
-                    article['source'] = source['name']
-                    article['timestamp'] = time.time()
-                    documents.insert_one(article)
+                existing_docs = vector_store.similarity_search(article['link'], k=1)
+                if not existing_docs or existing_docs[0].metadata['link'] != article['link']:
+                    # Prepare the document for Chroma
+                    doc = Document(
+                        page_content=f"{article['title']}\n\n{article['content']}",
+                        metadata={
+                            'title': article['title'],
+                            'link': article['link'],
+                            'source': source['name'],
+                            'timestamp': time.time()
+                        }
+                    )
+                    # Add the document to ChromaDB
+                    vector_store.add_documents([doc])
                     logger.info(f"Inserted new article: {article['title']}")
                 
             logger.info(f"Scraped {len(articles)} articles from {source['name']}")
@@ -53,6 +62,7 @@ def scrape_articles():
 def run_scraper(interval=3600):
     while True:
         scrape_articles()
+        vector_store.persist()  # Save changes
         time.sleep(interval)
 
 if __name__ == '__main__':
